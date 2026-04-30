@@ -1,0 +1,63 @@
+# MASTER MAPPING — versión escrita a mano para el MVP step 3.
+#
+# A futuro este archivo será GENERADO AUTOMÁTICAMENTE por el job
+# `regenerate-mapping.yml` leyendo MCSB, NIST 800-53, CIS Azure y los
+# controles custom de overrides/. De momento contiene un mínimo
+# representativo para validar el lookup determinista.
+
+metadata:
+  generated_at: "2026-04-30T00:00:00Z"
+  generator_version: "0.0.1-handwritten"
+  standards:
+    mcsb: "1.0"
+    cis-azure: "2.0.0"
+
+azurerm_storage_account:
+  controls:
+    - id: MCSB-DP-3
+      standard: mcsb
+      title: "Encrypt sensitive data in transit"
+      severity: high
+      families: [DP]
+      evaluation_focus: |
+        Verificar que `min_tls_version` esté en `TLS1_2` (o superior) y que
+        `enable_https_traffic_only` sea `true`.
+      wiki_signals: |
+        Si la wiki indica que el servicio maneja datos sensibles o regulados,
+        confirmar que estos atributos están alineados.
+
+    - id: MCSB-NS-2
+      standard: mcsb
+      title: "Restrict network access to cloud services"
+      severity: high
+      families: [NS]
+      evaluation_focus: |
+        Verificar que `public_network_access_enabled` sea `false`, o bien que
+        exista un bloque `network_rules` con `default_action = "Deny"` y una
+        lista explícita de subnets/IPs permitidas.
+      wiki_signals: |
+        Si la wiki dice que el servicio es interno, no debería haber acceso
+        público en el código (inconsistencia wiki↔código).
+
+    - id: CIS-3.1
+      standard: cis-azure
+      title: "Ensure 'Secure transfer required' is enabled"
+      severity: medium
+      families: [storage]
+      evaluation_focus: |
+        Verificar `enable_https_traffic_only = true` (en azurerm 4.x se llama
+        `https_traffic_only_enabled`). El control sólo evalúa el flag HTTPS.
+      wiki_signals: null
+
+azurerm_storage_container:
+  controls:
+    - id: CIS-3.7
+      standard: cis-azure
+      title: "Ensure that 'Public access level' is set to Private for blob containers"
+      severity: medium
+      families: [storage]
+      evaluation_focus: |
+        Verificar que `container_access_type` sea `private`. Cualquier otro
+        valor (`blob`, `container`) implica acceso público y debe marcarse
+        como FAIL.
+      wiki_signals: null
