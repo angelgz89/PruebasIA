@@ -1,8 +1,9 @@
 """
-Terraform Compliance Engine — MVP step 1.
+Terraform Compliance Engine — MVP step 2.
 
-Llama a un LLM de OpenAI con un prompt "hola mundo", parsea la respuesta y la
-publica como comentario en el PR cuando se ejecuta dentro de GitHub Actions.
+Step 1: Llamada hello-world a un LLM y publicación del resultado en el PR.
+Step 2: Lectura de archivos .tf con python-hcl2 y extracción de recursos
+        azurerm_*. El listado se incluye en el comentario del PR.
 """
 
 from __future__ import annotations
@@ -15,9 +16,16 @@ from pathlib import Path
 import requests
 from openai import AzureOpenAI, OpenAI
 
+# Asegura que el módulo `collector` (engine/collector.py) sea importable tanto
+# si se invoca `python engine/run.py` como si se invoca como módulo desde otro
+# script (p.ej. scripts/dry_run_pr.py).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from collector import CollectorResult, collect_terraform  # noqa: E402
+
 COMMENT_MARKER = "<!-- compliance-report -->"
 DEFAULT_MODEL = "gpt-5.4-pro"
 DEFAULT_PROMPT = "Di 'hola mundo' en una sola frase, en español, sin texto extra."
+DEFAULT_REPO_PATH = "scripts/example-terraform"
 
 
 def _build_client():
@@ -60,17 +68,46 @@ def parse_response(raw: str) -> dict:
     }
 
 
-def render_comment(parsed: dict, model: str) -> str:
-    return (
-        f"{COMMENT_MARKER}\n"
-        f"## Compliance Engine — MVP step 1\n\n"
-        f"Llamada al LLM (`{model}`) realizada correctamente.\n\n"
-        f"| Campo | Valor |\n"
-        f"|---|---|\n"
-        f"| Respuesta | {parsed['greeting']} |\n"
-        f"| Longitud | {parsed['length']} |\n"
-        f"| OK | {parsed['ok']} |\n"
-    )
+def render_comment(parsed: dict, model: str, collected: CollectorResult | None = None) -> str:
+    lines = [
+        COMMENT_MARKER,
+        "## Compliance Engine — MVP step 2",
+        "",
+        f"Llamada al LLM (`{model}`) realizada correctamente.",
+        "",
+        "| Campo | Valor |",
+        "|---|---|",
+        f"| Respuesta | {parsed['greeting']} |",
+        f"| Longitud | {parsed['length']} |",
+        f"| OK | {parsed['ok']} |",
+    ]
+
+    if collected is not None:
+        by_type = collected.by_type()
+        lines += [
+            "",
+            "### Terraform escaneado",
+            "",
+            f"- Path analizado: `{collected.repo_path}`",
+            f"- Ficheros `.tf` parseados: {collected.files_parsed} / {collected.files_scanned}",
+            f"- Recursos totales: {len(collected.resources)}",
+            f"- Tipos `azurerm_*` únicos: {len(collected.azurerm_resource_types)}",
+        ]
+        if collected.parse_errors:
+            lines.append(f"- ⚠️ Errores de parseo: {len(collected.parse_errors)}")
+        if collected.azurerm_resource_types:
+            lines += [
+                "",
+                "**Recursos detectados:**",
+                "",
+                "| Tipo | Cantidad | Instancias |",
+                "|---|---|---|",
+            ]
+            for rtype in collected.azurerm_resource_types:
+                instances = ", ".join(f"`{r.name}`" for r in by_type[rtype])
+                lines.append(f"| `{rtype}` | {len(by_type[rtype])} | {instances} |")
+
+    return "\n".join(lines) + "\n"
 
 
 def get_pr_number() -> int | None:
@@ -124,10 +161,26 @@ def main() -> int:
 
     model = os.environ.get("OPENAI_MODEL") or DEFAULT_MODEL
     prompt = os.environ.get("PROMPT") or DEFAULT_PROMPT
+    repo_path = os.environ.get("REPO_PATH") or DEFAULT_REPO_PATH
+
+    collected: CollectorResult | None = None
+    if Path(repo_path).exists():
+        collected = collect_terraform(repo_path)
+        print(
+            f"[info] Terraform: {collected.files_parsed}/{collected.files_scanned} .tf parseados, "
+            f"{len(collected.resources)} recursos, "
+            f"{len(collected.azurerm_resource_types)} tipos azurerm"
+        )
+        if collected.parse_errors:
+            print(f"[warn] {len(collected.parse_errors)} errores de parseo:")
+            for err in collected.parse_errors:
+                print(f"  - {err['file']}: {err['error']}")
+    else:
+        print(f"[info] REPO_PATH '{repo_path}' no existe; salto el escaneo de Terraform.")
 
     raw = call_llm(prompt, model)
     parsed = parse_response(raw)
-    body = render_comment(parsed, model)
+    body = render_comment(parsed, model, collected)
 
     print("---- Respuesta LLM ----")
     print(raw)
