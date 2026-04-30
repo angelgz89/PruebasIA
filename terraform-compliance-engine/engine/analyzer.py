@@ -11,10 +11,13 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from openai import AzureOpenAI, OpenAI
+
+DEFAULT_MAX_WORKERS = 8
 
 SYSTEM_PROMPT = """Eres un experto en ciberseguridad cloud especializado en Azure e infraestructura como código.
 Tu tarea es evaluar si el recurso Terraform proporcionado cumple con el control de seguridad indicado.
@@ -178,10 +181,36 @@ def evaluate_one(client, is_azure: bool, model: str, assignment) -> ControlVerdi
     )
 
 
+def _max_workers(assignments_count: int) -> int:
+    """Resuelve cuántos workers usar a partir de ANALYZER_MAX_WORKERS y el
+    nº de assignments. Mínimo 1, máximo el nº de assignments (no tiene
+    sentido tener más workers que tareas)."""
+    raw = os.environ.get("ANALYZER_MAX_WORKERS")
+    try:
+        configured = int(raw) if raw else DEFAULT_MAX_WORKERS
+    except ValueError:
+        configured = DEFAULT_MAX_WORKERS
+    return max(1, min(configured, max(1, assignments_count)))
+
+
 def evaluate_assignments(model: str, assignments: Iterable) -> AnalyzerResult:
-    """Construye un cliente y evalúa secuencialmente cada assignment."""
+    """Construye un cliente y evalúa los assignments en paralelo (threads).
+
+    Las llamadas al LLM son I/O-bound y el SDK de OpenAI es thread-safe, así
+    que `ThreadPoolExecutor` con un único cliente compartido es lo más
+    eficiente. `ex.map` preserva el orden de entrada en la salida.
+    """
     client, is_azure = build_client()
-    verdicts: list[ControlVerdict] = []
-    for assignment in assignments:
-        verdicts.append(evaluate_one(client, is_azure, model, assignment))
+    assignments_list = list(assignments)
+    if not assignments_list:
+        return AnalyzerResult(model=model, verdicts=[])
+
+    workers = _max_workers(len(assignments_list))
+    if workers == 1:
+        verdicts = [evaluate_one(client, is_azure, model, a) for a in assignments_list]
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="analyzer") as ex:
+            verdicts = list(
+                ex.map(lambda a: evaluate_one(client, is_azure, model, a), assignments_list)
+            )
     return AnalyzerResult(model=model, verdicts=verdicts)
