@@ -1,9 +1,11 @@
 """
-Terraform Compliance Engine — MVP step 2.
+Terraform Compliance Engine — MVP step 3.
 
 Step 1: Llamada hello-world a un LLM y publicación del resultado en el PR.
 Step 2: Lectura de archivos .tf con python-hcl2 y extracción de recursos
-        azurerm_*. El listado se incluye en el comentario del PR.
+        azurerm_*.
+Step 3: Lookup determinista contra `mappings/master-mapping.yaml` para
+        decidir qué controles aplican a cada recurso (sin LLM aún).
 """
 
 from __future__ import annotations
@@ -16,16 +18,24 @@ from pathlib import Path
 import requests
 from openai import AzureOpenAI, OpenAI
 
-# Asegura que el módulo `collector` (engine/collector.py) sea importable tanto
-# si se invoca `python engine/run.py` como si se invoca como módulo desde otro
-# script (p.ej. scripts/dry_run_pr.py).
+# Asegura que los módulos en engine/ sean importables tanto si se invoca
+# `python engine/run.py` como si se invoca como módulo desde otro script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from collector import CollectorResult, collect_terraform  # noqa: E402
+from mapper import MappingResult, resolve_controls  # noqa: E402
 
 COMMENT_MARKER = "<!-- compliance-report -->"
 DEFAULT_MODEL = "gpt-5.4-pro"
 DEFAULT_PROMPT = "Di 'hola mundo' en una sola frase, en español, sin texto extra."
 DEFAULT_REPO_PATH = "scripts/example-terraform"
+DEFAULT_MAPPING_PATH = "mappings/master-mapping.yaml"
+
+SEVERITY_ICONS = {
+    "critical": "🔴",
+    "high": "🟠",
+    "medium": "🟡",
+    "low": "🔵",
+}
 
 
 def _build_client():
@@ -68,15 +78,20 @@ def parse_response(raw: str) -> dict:
     }
 
 
-def render_comment(parsed: dict, model: str, collected: CollectorResult | None = None) -> str:
+def render_comment(
+    parsed: dict,
+    model: str,
+    collected: CollectorResult | None = None,
+    mapping: MappingResult | None = None,
+) -> str:
     lines = [
         COMMENT_MARKER,
-        "## Compliance Engine — MVP step 2",
+        "## Compliance Engine — MVP step 3",
         "",
         f"Llamada al LLM (`{model}`) realizada correctamente.",
         "",
         "| Campo | Valor |",
-        "|---|---|",
+        "| --- | --- |",
         f"| Respuesta | {parsed['greeting']} |",
         f"| Longitud | {parsed['length']} |",
         f"| OK | {parsed['ok']} |",
@@ -101,11 +116,38 @@ def render_comment(parsed: dict, model: str, collected: CollectorResult | None =
                 "**Recursos detectados:**",
                 "",
                 "| Tipo | Cantidad | Instancias |",
-                "|---|---|---|",
+                "| --- | --- | --- |",
             ]
             for rtype in collected.azurerm_resource_types:
                 instances = ", ".join(f"`{r.name}`" for r in by_type[rtype])
                 lines.append(f"| `{rtype}` | {len(by_type[rtype])} | {instances} |")
+
+    if mapping is not None:
+        lines += [
+            "",
+            "### Controles aplicables (sin evaluar aún)",
+            "",
+            f"- Mapping: `{mapping.mapping_path}`",
+            f"- Total asignaciones recurso↔control: {mapping.total_assignments}",
+        ]
+        by_std = mapping.assignments_by_standard
+        if by_std:
+            counts = " · ".join(f"{std}: {n}" for std, n in by_std.items())
+            lines.append(f"- Por estándar: {counts}")
+        if mapping.resources_without_controls:
+            no_ctrl = ", ".join(f"`{t}`" for t in mapping.resources_without_controls)
+            lines.append(f"- Tipos sin controles en el mapping: {no_ctrl}")
+        if mapping.assignments:
+            lines += [
+                "",
+                "| Recurso | Control | Severidad | Título |",
+                "| --- | --- | --- | --- |",
+            ]
+            for a in mapping.assignments:
+                icon = SEVERITY_ICONS.get(a.severity, "")
+                sev = f"{icon} {a.severity}".strip()
+                resource = f"`{a.resource_type}.{a.resource_name}`"
+                lines.append(f"| {resource} | `{a.control_id}` | {sev} | {a.title} |")
 
     return "\n".join(lines) + "\n"
 
@@ -162,6 +204,7 @@ def main() -> int:
     model = os.environ.get("OPENAI_MODEL") or DEFAULT_MODEL
     prompt = os.environ.get("PROMPT") or DEFAULT_PROMPT
     repo_path = os.environ.get("REPO_PATH") or DEFAULT_REPO_PATH
+    mapping_path = os.environ.get("MAPPING_PATH") or DEFAULT_MAPPING_PATH
 
     collected: CollectorResult | None = None
     if Path(repo_path).exists():
@@ -178,9 +221,24 @@ def main() -> int:
     else:
         print(f"[info] REPO_PATH '{repo_path}' no existe; salto el escaneo de Terraform.")
 
+    mapping: MappingResult | None = None
+    if collected is not None and Path(mapping_path).exists():
+        mapping = resolve_controls(collected, mapping_path)
+        print(
+            f"[info] Mapping: {mapping.total_assignments} asignaciones recurso↔control "
+            f"({mapping.assignments_by_standard})"
+        )
+        if mapping.resources_without_controls:
+            print(
+                f"[info] Tipos sin controles en el mapping: "
+                f"{', '.join(mapping.resources_without_controls)}"
+            )
+    elif collected is not None:
+        print(f"[info] MAPPING_PATH '{mapping_path}' no existe; salto el lookup de controles.")
+
     raw = call_llm(prompt, model)
     parsed = parse_response(raw)
-    body = render_comment(parsed, model, collected)
+    body = render_comment(parsed, model, collected, mapping)
 
     print("---- Respuesta LLM ----")
     print(raw)
