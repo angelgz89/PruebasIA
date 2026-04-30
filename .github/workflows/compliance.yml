@@ -1,5 +1,17 @@
 name: compliance
 
+# Configuración necesaria en el repositorio (Settings -> Secrets and variables -> Actions):
+#
+#   secrets:
+#     OPENAI_API_KEY            # API key de OpenAI o de Azure OpenAI
+#
+#   variables (opcionales — sólo si se usa Azure OpenAI):
+#     AZURE_OPENAI_ENDPOINT     # ej: https://my-aoai.openai.azure.com
+#     AZURE_OPENAI_API_VERSION  # ej: 2025-04-01-preview
+#     OPENAI_MODEL              # ej: gpt-5.4-pro (deployment name en Azure)
+#
+# Si AZURE_OPENAI_ENDPOINT está vacío, el engine usa el cliente OpenAI público.
+
 on:
   pull_request:
   workflow_dispatch:
@@ -36,5 +48,8 @@ jobs:
       - name: Run compliance engine (MVP step 1)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_API_VERSION: ${{ vars.AZURE_OPENAI_API_VERSION }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python engine/run.py
