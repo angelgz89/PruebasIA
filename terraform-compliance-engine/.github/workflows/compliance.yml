@@ -11,9 +11,14 @@ name: compliance
 #     OPENAI_MODEL              # ej: gpt-5.4-pro (deployment name en Azure)
 #
 # Si AZURE_OPENAI_ENDPOINT está vacío, el engine usa el cliente OpenAI público.
+#
+# Activación: este workflow es opt-in. Solo se ejecuta si el PR lleva el label
+# `security-check`. El label hay que crearlo una vez en el repo
+# (Issues -> Labels -> New label, o `gh label create security-check`).
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
@@ -28,6 +33,11 @@ jobs:
   hello-llm:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Opt-in: solo corre si el PR lleva el label `security-check`
+    # (o si se lanza manualmente con workflow_dispatch).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'security-check')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
