@@ -10,6 +10,7 @@ resource "azurerm_resource_group" "example" {
 #   - public_network_access_enabled = true
 #   - sin network_rules
 #   - sin tags obligatorios
+
 resource "azurerm_storage_account" "example" {
   name                            = var.storage_account_name
   resource_group_name             = azurerm_resource_group.example.name
